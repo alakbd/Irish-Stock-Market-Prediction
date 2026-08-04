@@ -234,7 +234,6 @@ def plot_signals(test, ticker, model_name, position_col):
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     safe_model = model_name.replace(" ", "_")
-    plt.savefig(f"Figures/Signals/{ticker}_{safe_model}_signals.png", dpi=300, bbox_inches="tight")
-    plt.show()
-    plt.close()
+    plt.tight_layout()
+    return fig
 
