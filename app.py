@@ -17,6 +17,16 @@ from sklearn.metrics import (
 
 warnings.filterwarnings("ignore")
 
+st.set_page_config(
+    page_title="Irish Stock Market Prediction",
+    page_icon="📈",
+    layout="wide"
+)
+
+st.title("📈 Irish Stock Market Prediction")
+
+st.write("Welcome to the Stock Market Prediction Application.")
+
 # =========================
 # PARAMETERS
 # =========================
