@@ -237,3 +237,7 @@ def plot_signals(test, ticker, model_name, position_col):
     plt.tight_layout()
     return fig
 
+
+def run_analysis(selected_ticker):
+    print(f"Running analysis for {selected_ticker}")
+
