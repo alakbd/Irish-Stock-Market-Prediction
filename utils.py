@@ -18,3 +18,21 @@ from sklearn.metrics import (
 )
 
 warnings.filterwarnings("ignore")
+
+
+tickers = [
+    "IRES.IR",
+    "KRZ.IR",
+    "GL9.IR",
+    "UPR.IR",
+    "GRP.IR",
+    "KRX.IR",
+    "KMR.IR"
+]
+
+period = "8y"
+weekly_threshold = 0.01
+transaction_cost = 0.001
+train_ratio = 0.70
+random_seed = 42
+risk_free_rate = 0.0
