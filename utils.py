@@ -239,5 +239,19 @@ def plot_signals(test, ticker, model_name, position_col):
 
 
 def run_analysis(selected_ticker):
-    print(f"Running analysis for {selected_ticker}")
+
+    all_results = []
+    overall_trading = []
+
+    features_list = [
+        "SMA10",
+        "SMA20",
+        "EMA12",
+        "EMA26",
+        "RSI",
+        "MACD",
+        "Return_lag1",
+        "Return_lag2",
+        "Volatility"
+    ]
 
