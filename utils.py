@@ -181,7 +181,7 @@ def calculate_metrics(y_test, lr_pred, xgb_pred, lr_proba, xgb_proba):
 def calculate_sharpe_ratio(returns, risk_free_rate=0.0):
     """Calculate annualized Sharpe ratio"""
     excess = returns - risk_free_rate / 52
-    if excess.std() == 0:
+    if excess.std() == 0 or np.isnan(excess.std()):
         return 0
     return (excess.mean() / excess.std()) * np.sqrt(52)
 
