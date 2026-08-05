@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import xgboost as xgb
 import yfinance as yf
+import shap
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
@@ -109,7 +110,7 @@ def win_rate(r):
 # =========================
 # TRAIN / TEST SPLIT & MODEL FITTING - EXACTLY AS ORIGINAL
 # =========================
-def train_and_predict(X, y):
+def train_and_predict(X, y, ticker):
     """
     Simple chronological 70/30 split — no data shuffling so time order
     is preserved.  Returns predictions and fitted objects for the test set.
@@ -173,6 +174,39 @@ def train_and_predict(X, y):
 
     xgb_proba = xgb_model.predict(dtest)
 
+    # =========================
+    # SHAP VALUES - EXACTLY AS ORIGINAL
+    # =========================
+    explainer = shap.TreeExplainer(xgb_model)
+    
+    # SHAP values calculated on the scaled test data
+    shap_values = explainer.shap_values(X_te_s)
+    
+    # Summary Plot - EXACTLY AS ORIGINAL
+    plt.figure(figsize=(10,6))
+    shap.summary_plot(
+        shap_values,
+        X_te,                  # original dataframe (keeps feature names)
+        feature_names=X_te.columns,
+        show=False
+    )
+    plt.tight_layout()
+    plt.savefig(f"Figures/SHAP/{ticker}_SHAP_Summary.png", dpi=300)
+    plt.close()
+    
+    # Feature Importance (Bar) - EXACTLY AS ORIGINAL
+    plt.figure(figsize=(8,6))
+    shap.summary_plot(
+        shap_values,
+        X_te,
+        feature_names=X_te.columns,
+        plot_type="bar",
+        show=False
+    )
+    plt.tight_layout()
+    plt.savefig(f"Figures/SHAP/{ticker}_SHAP_Bar.png", dpi=300)
+    plt.close()
+
     # --------------------------------------------------
     # Tune XGBoost threshold on the test set probabilities
     # to maximise F1 (avoids the hard 0.5 default)
@@ -187,7 +221,7 @@ def train_and_predict(X, y):
     return (X_te, y_te,
             lr_pred, lr_proba,
             xgb_pred, xgb_proba,
-            xgb_model, scaler, split)
+            xgb_model, scaler, split, shap_values)
 
 # =========================
 # SIGNAL PLOT (transitions only) - EXACTLY AS ORIGINAL
@@ -236,7 +270,19 @@ def plot_signals(test, ticker, model_name, position_col):
 # =========================
 # MAIN LOOP - EXACTLY AS ORIGINAL
 # =========================
-if st.button("🚀 Run Analysis (Original Results)", type="primary"):
+if st.button("🚀 Run Analysis", type="primary"):
+    
+    # Create folders (for file saving)
+    folders = [
+        "Figures/Confusion",
+        "Figures/Cumulative",
+        "Figures/Signals",
+        "Figures/SHAP",
+        "Figures/FeatureImportance",
+        "Results"
+    ]
+    for f in folders:
+        os.makedirs(f, exist_ok=True)
     
     # Progress tracking
     progress_bar = st.progress(0)
@@ -248,211 +294,280 @@ if st.button("🚀 Run Analysis (Original Results)", type="primary"):
     features_list = ["SMA10", "SMA20", "EMA12", "EMA26", "RSI", "MACD",
                      "Return_lag1", "Return_lag2", "Volatility"]
     
-    for idx, ticker in enumerate(tickers):
-        status_text.text(f"Processing {ticker}... ({idx+1}/{len(tickers)})")
-        
-        # -------------------------
-        # DATA - EXACTLY AS ORIGINAL
-        # -------------------------
-        df = download_stock_data(ticker)
-        weekly_df = convert_to_weekly(df)
-        weekly_df = create_features(weekly_df)
+    # Display results in expandable sections
+    results_container = st.container()
+    
+    with results_container:
+        for idx, ticker in enumerate(tickers):
+            status_text.text(f"Processing {ticker}... ({idx+1}/{len(tickers)})")
+            
+            # -------------------------
+            # DATA - EXACTLY AS ORIGINAL
+            # -------------------------
+            df = download_stock_data(ticker)
+            weekly_df = convert_to_weekly(df)
+            weekly_df = create_features(weekly_df)
 
-        # Target: next week's return > threshold → 1 (BUY), else 0
-        weekly_df["Target"] = np.where(
-            weekly_df["Return"].shift(-1) > weekly_threshold, 1, 0
-        )
+            # Target: next week's return > threshold → 1 (BUY), else 0
+            weekly_df["Target"] = np.where(
+                weekly_df["Return"].shift(-1) > weekly_threshold, 1, 0
+            )
 
-        weekly_df.dropna(inplace=True)
+            weekly_df.dropna(inplace=True)
 
-        X = weekly_df[features_list]
-        y = weekly_df["Target"]
+            X = weekly_df[features_list]
+            y = weekly_df["Target"]
 
-        # --- Diagnostics: class balance ---
-        class_counts = y.value_counts()
-        if len(class_counts) < 2:
-            st.warning(f"{ticker}: Only one class present — skipping.")
+            # --- Diagnostics: class balance ---
+            class_counts = y.value_counts()
+            if len(class_counts) < 2:
+                st.warning(f"{ticker}: Only one class present — skipping.")
+                progress_bar.progress((idx + 1) / len(tickers))
+                continue
+
+            # -------------------------
+            # TRAIN / TEST SPLIT - EXACTLY AS ORIGINAL
+            # -------------------------
+            (X_te, y_test,
+             lr_pred, lr_proba,
+             xgb_pred, xgb_proba,
+             xgb_model, scaler, split, shap_values) = train_and_predict(X, y, ticker)
+
+            # Test slice of weekly_df
+            test = weekly_df.iloc[split:].copy()
+
+            test["LR_Position"]  = lr_pred
+            test["XGB_Position"] = xgb_pred
+            test["LR_Proba"]     = lr_proba
+            test["XGB_Proba"]    = xgb_proba
+
+            # --- Diagnostics: zero-trade check ---
+            n_lr_trades  = (test["LR_Position"].diff().abs() > 0).sum()
+            n_xgb_trades = (test["XGB_Position"].diff().abs() > 0).sum()
+
+            # -------------------------
+            # CLASSIFICATION METRICS - EXACTLY AS ORIGINAL
+            # -------------------------
+            def safe_roc(y_true, proba):
+                if len(np.unique(y_true)) < 2:
+                    return np.nan
+                return roc_auc_score(y_true, proba)
+
+            classification_results = pd.DataFrame({
+                "Model":     ["Logistic Regression", "XGBoost"],
+                "Accuracy":  [accuracy_score(y_test, lr_pred),
+                              accuracy_score(y_test, xgb_pred)],
+                "Precision": [precision_score(y_test, lr_pred,  zero_division=0),
+                              precision_score(y_test, xgb_pred, zero_division=0)],
+                "Recall":    [recall_score(y_test, lr_pred,  zero_division=0),
+                              recall_score(y_test, xgb_pred, zero_division=0)],
+                "F1 Score":  [f1_score(y_test, lr_pred,  zero_division=0),
+                              f1_score(y_test, xgb_pred, zero_division=0)],
+                "ROC-AUC":   [safe_roc(y_test, test["LR_Proba"]),
+                              safe_roc(y_test, test["XGB_Proba"])]
+            })
+
+            # -------------------------
+            # STRATEGY RETURNS WITH TRANSACTION COST - EXACTLY AS ORIGINAL
+            # -------------------------
+            test["LR_Trade"]  = test["LR_Position"].diff().abs().fillna(0)
+            test["XGB_Trade"] = test["XGB_Position"].diff().abs().fillna(0)
+
+            test["LR_Returns"] = (
+                test["Return"] * test["LR_Position"]
+                - transaction_cost * test["LR_Trade"]
+            )
+            test["XGB_Returns"] = (
+                test["Return"] * test["XGB_Position"]
+                - transaction_cost * test["XGB_Trade"]
+            )
+
+            test["Market_Cum"] = (1 + test["Return"]).cumprod()
+            test["LR_Cum"]     = (1 + test["LR_Returns"]).cumprod()
+            test["XGB_Cum"]    = (1 + test["XGB_Returns"]).cumprod()
+
+            # -------------------------
+            # TRADING PERFORMANCE TABLE - EXACTLY AS ORIGINAL
+            # -------------------------
+            trading_results = pd.DataFrame({
+                "Strategy": [
+                    "Buy & Hold (Benchmark)",
+                    "Logistic Regression",
+                    "XGBoost"
+                ],
+                "Total Return (%)": [
+                    (test["Market_Cum"].iloc[-1] - 1) * 100,
+                    (test["LR_Cum"].iloc[-1] - 1) * 100,
+                    (test["XGB_Cum"].iloc[-1] - 1) * 100
+                ],
+                "Sharpe Ratio": [
+                    sharpe_ratio(test["Return"]),
+                    sharpe_ratio(test["LR_Returns"]),
+                    sharpe_ratio(test["XGB_Returns"])
+                ],
+                "Maximum Drawdown (%)": [
+                    max_drawdown(test["Market_Cum"]) * 100,
+                    max_drawdown(test["LR_Cum"]) * 100,
+                    max_drawdown(test["XGB_Cum"]) * 100
+                ],
+                "Win Rate (%)": [
+                    win_rate(test["Return"]) * 100,
+                    win_rate(test["LR_Returns"]) * 100,
+                    win_rate(test["XGB_Returns"]) * 100
+                ]
+            })
+
+            # Store for summary
+            all_results.append({
+                "Ticker":           ticker,
+                "Market_Return":    test["Market_Cum"].iloc[-1] - 1,
+                "LR_Return":        test["LR_Cum"].iloc[-1]     - 1,
+                "XGB_Return":       test["XGB_Cum"].iloc[-1]    - 1,
+                "Market_Sharpe":    sharpe_ratio(test["Return"]),
+                "LR_Sharpe":        sharpe_ratio(test["LR_Returns"]),
+                "XGB_Sharpe":       sharpe_ratio(test["XGB_Returns"]),
+                "Market_Drawdown":  max_drawdown(test["Market_Cum"]),
+                "LR_Drawdown":      max_drawdown(test["LR_Cum"]),
+                "XGB_Drawdown":     max_drawdown(test["XGB_Cum"]),
+                "LR_WinRate":       win_rate(test["LR_Returns"]),
+                "XGB_WinRate":      win_rate(test["XGB_Returns"]),
+            })
+
+            overall_trading.append({
+                "Ticker": ticker,
+                "Market Return": test["Market_Cum"].iloc[-1] - 1,
+                "LR Return": test["LR_Cum"].iloc[-1] - 1,
+                "XGB Return": test["XGB_Cum"].iloc[-1] - 1,
+                "Market Sharpe": sharpe_ratio(test["Return"]),
+                "LR Sharpe": sharpe_ratio(test["LR_Returns"]),
+                "XGB Sharpe": sharpe_ratio(test["XGB_Returns"]),
+                "Market Drawdown": max_drawdown(test["Market_Cum"]),
+                "LR Drawdown": max_drawdown(test["LR_Cum"]),
+                "XGB Drawdown": max_drawdown(test["XGB_Cum"]),
+                "Market Win Rate": win_rate(test["Return"]),
+                "LR Win Rate": win_rate(test["LR_Returns"]),
+                "XGB Win Rate": win_rate(test["XGB_Returns"])
+            })
+
+            # -------------------------
+            # SAVE FIGURES - EXACTLY AS ORIGINAL
+            # -------------------------
+            
+            # Confusion Matrices
+            fig, ax = plt.subplots(1, 2, figsize=(12, 5))
+            ConfusionMatrixDisplay.from_predictions(y_test, lr_pred,  cmap="Blues",  ax=ax[0])
+            ax[0].set_title("Logistic Regression")
+            ConfusionMatrixDisplay.from_predictions(y_test, xgb_pred, cmap="Greens", ax=ax[1])
+            ax[1].set_title("XGBoost")
+            plt.suptitle(f"{ticker} Confusion Matrices")
+            plt.tight_layout()
+            plt.savefig(f"Figures/Confusion/{ticker}_confusion.png", dpi=300, bbox_inches="tight")
+            plt.close()
+
+            # Feature Importance (XGBoost)
+            plt.figure(figsize=(8, 6))
+            xgb.plot_importance(xgb_model, importance_type="gain", xlabel="Importance Score")
+            plt.title(f"{ticker} — XGBoost Feature Importance")
+            plt.tight_layout()
+            plt.savefig(f"Figures/FeatureImportance/{ticker}_feature_importance.png",
+                        dpi=300, bbox_inches="tight")
+            plt.close()
+
+            # Signal Plots
+            fig = plot_signals(test, ticker, "Logistic Regression", "LR_Position")
+            plt.savefig(f"Figures/Signals/{ticker}_Logistic_Regression_signals.png", dpi=300, bbox_inches="tight")
+            plt.close()
+            
+            fig = plot_signals(test, ticker, "XGBoost", "XGB_Position")
+            plt.savefig(f"Figures/Signals/{ticker}_XGBoost_signals.png", dpi=300, bbox_inches="tight")
+            plt.close()
+
+            # Cumulative Returns Plot
+            plt.figure(figsize=(12, 6))
+            plt.plot(test.index, test["Market_Cum"], label="Buy & Hold", linewidth=2)
+            plt.plot(test.index, test["LR_Cum"],     label="LR Strategy",  linewidth=2)
+            plt.plot(test.index, test["XGB_Cum"],    label="XGB Strategy", linewidth=2)
+            plt.title(f"{ticker} — Cumulative Returns", fontsize=14)
+            plt.xlabel("Date")
+            plt.ylabel("Growth of €1")
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(f"Figures/Cumulative/{ticker}_cumulative.png", dpi=300, bbox_inches="tight")
+            plt.close()
+
+            # SHAP plots are already saved in train_and_predict function
+
+            # -------------------------
+            # DISPLAY RESULTS FOR THIS TICKER
+            # -------------------------
+            st.subheader(f"📊 {ticker}")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Classification Results**")
+                st.dataframe(classification_results.round(3))
+                
+                # Save classification results
+                classification_results.to_csv(
+                    f"Results/{ticker}_classification_metrics.csv", index=False
+                )
+            
+            with col2:
+                st.markdown("**Trading Performance**")
+                st.dataframe(trading_results.round(2))
+                
+                # Save trading results
+                trading_results.to_csv(
+                    f"Results/{ticker}_trading_metrics.csv", index=False
+                )
+            
+            # Display SHAP plots
+            st.markdown("**SHAP Analysis**")
+            shap_col1, shap_col2 = st.columns(2)
+            
+            with shap_col1:
+                # Display SHAP Summary
+                if os.path.exists(f"Figures/SHAP/{ticker}_SHAP_Summary.png"):
+                    st.image(f"Figures/SHAP/{ticker}_SHAP_Summary.png", 
+                            caption=f"{ticker} - SHAP Summary Plot")
+            
+            with shap_col2:
+                # Display SHAP Bar
+                if os.path.exists(f"Figures/SHAP/{ticker}_SHAP_Bar.png"):
+                    st.image(f"Figures/SHAP/{ticker}_SHAP_Bar.png", 
+                            caption=f"{ticker} - SHAP Feature Importance")
+            
+            # Display other plots in expandable sections
+            with st.expander(f"📈 View Plots for {ticker}"):
+                # Confusion Matrices
+                if os.path.exists(f"Figures/Confusion/{ticker}_confusion.png"):
+                    st.image(f"Figures/Confusion/{ticker}_confusion.png", 
+                            caption=f"{ticker} - Confusion Matrices")
+                
+                # Feature Importance
+                if os.path.exists(f"Figures/FeatureImportance/{ticker}_feature_importance.png"):
+                    st.image(f"Figures/FeatureImportance/{ticker}_feature_importance.png", 
+                            caption=f"{ticker} - XGBoost Feature Importance")
+                
+                # Signal Plots
+                col_sig1, col_sig2 = st.columns(2)
+                with col_sig1:
+                    if os.path.exists(f"Figures/Signals/{ticker}_Logistic_Regression_signals.png"):
+                        st.image(f"Figures/Signals/{ticker}_Logistic_Regression_signals.png", 
+                                caption=f"{ticker} - Logistic Regression Signals")
+                with col_sig2:
+                    if os.path.exists(f"Figures/Signals/{ticker}_XGBoost_signals.png"):
+                        st.image(f"Figures/Signals/{ticker}_XGBoost_signals.png", 
+                                caption=f"{ticker} - XGBoost Signals")
+                
+                # Cumulative Returns
+                if os.path.exists(f"Figures/Cumulative/{ticker}_cumulative.png"):
+                    st.image(f"Figures/Cumulative/{ticker}_cumulative.png", 
+                            caption=f"{ticker} - Cumulative Returns")
+            
             progress_bar.progress((idx + 1) / len(tickers))
-            continue
-
-        # -------------------------
-        # TRAIN / TEST SPLIT - EXACTLY AS ORIGINAL
-        # -------------------------
-        (X_te, y_test,
-         lr_pred, lr_proba,
-         xgb_pred, xgb_proba,
-         xgb_model, scaler, split) = train_and_predict(X, y)
-
-        # Test slice of weekly_df
-        test = weekly_df.iloc[split:].copy()
-
-        test["LR_Position"]  = lr_pred
-        test["XGB_Position"] = xgb_pred
-        test["LR_Proba"]     = lr_proba
-        test["XGB_Proba"]    = xgb_proba
-
-        # -------------------------
-        # CLASSIFICATION METRICS - EXACTLY AS ORIGINAL
-        # -------------------------
-        def safe_roc(y_true, proba):
-            if len(np.unique(y_true)) < 2:
-                return np.nan
-            return roc_auc_score(y_true, proba)
-
-        classification_results = pd.DataFrame({
-            "Model":     ["Logistic Regression", "XGBoost"],
-            "Accuracy":  [accuracy_score(y_test, lr_pred),
-                          accuracy_score(y_test, xgb_pred)],
-            "Precision": [precision_score(y_test, lr_pred,  zero_division=0),
-                          precision_score(y_test, xgb_pred, zero_division=0)],
-            "Recall":    [recall_score(y_test, lr_pred,  zero_division=0),
-                          recall_score(y_test, xgb_pred, zero_division=0)],
-            "F1 Score":  [f1_score(y_test, lr_pred,  zero_division=0),
-                          f1_score(y_test, xgb_pred, zero_division=0)],
-            "ROC-AUC":   [safe_roc(y_test, test["LR_Proba"]),
-                          safe_roc(y_test, test["XGB_Proba"])]
-        })
-
-        # -------------------------
-        # STRATEGY RETURNS WITH TRANSACTION COST - EXACTLY AS ORIGINAL
-        # -------------------------
-        test["LR_Trade"]  = test["LR_Position"].diff().abs().fillna(0)
-        test["XGB_Trade"] = test["XGB_Position"].diff().abs().fillna(0)
-
-        test["LR_Returns"] = (
-            test["Return"] * test["LR_Position"]
-            - transaction_cost * test["LR_Trade"]
-        )
-        test["XGB_Returns"] = (
-            test["Return"] * test["XGB_Position"]
-            - transaction_cost * test["XGB_Trade"]
-        )
-
-        test["Market_Cum"] = (1 + test["Return"]).cumprod()
-        test["LR_Cum"]     = (1 + test["LR_Returns"]).cumprod()
-        test["XGB_Cum"]    = (1 + test["XGB_Returns"]).cumprod()
-
-        # -------------------------
-        # TRADING PERFORMANCE TABLE - EXACTLY AS ORIGINAL
-        # -------------------------
-        trading_results = pd.DataFrame({
-            "Strategy": [
-                "Buy & Hold (Benchmark)",
-                "Logistic Regression",
-                "XGBoost"
-            ],
-            "Total Return (%)": [
-                (test["Market_Cum"].iloc[-1] - 1) * 100,
-                (test["LR_Cum"].iloc[-1] - 1) * 100,
-                (test["XGB_Cum"].iloc[-1] - 1) * 100
-            ],
-            "Sharpe Ratio": [
-                sharpe_ratio(test["Return"]),
-                sharpe_ratio(test["LR_Returns"]),
-                sharpe_ratio(test["XGB_Returns"])
-            ],
-            "Maximum Drawdown (%)": [
-                max_drawdown(test["Market_Cum"]) * 100,
-                max_drawdown(test["LR_Cum"]) * 100,
-                max_drawdown(test["XGB_Cum"]) * 100
-            ],
-            "Win Rate (%)": [
-                win_rate(test["Return"]) * 100,
-                win_rate(test["LR_Returns"]) * 100,
-                win_rate(test["XGB_Returns"]) * 100
-            ]
-        })
-
-        # Store for summary
-        all_results.append({
-            "Ticker":           ticker,
-            "Market_Return":    test["Market_Cum"].iloc[-1] - 1,
-            "LR_Return":        test["LR_Cum"].iloc[-1]     - 1,
-            "XGB_Return":       test["XGB_Cum"].iloc[-1]    - 1,
-            "Market_Sharpe":    sharpe_ratio(test["Return"]),
-            "LR_Sharpe":        sharpe_ratio(test["LR_Returns"]),
-            "XGB_Sharpe":       sharpe_ratio(test["XGB_Returns"]),
-            "Market_Drawdown":  max_drawdown(test["Market_Cum"]),
-            "LR_Drawdown":      max_drawdown(test["LR_Cum"]),
-            "XGB_Drawdown":     max_drawdown(test["XGB_Cum"]),
-            "LR_WinRate":       win_rate(test["LR_Returns"]),
-            "XGB_WinRate":      win_rate(test["XGB_Returns"]),
-        })
-
-        overall_trading.append({
-            "Ticker": ticker,
-            "Market Return": test["Market_Cum"].iloc[-1] - 1,
-            "LR Return": test["LR_Cum"].iloc[-1] - 1,
-            "XGB Return": test["XGB_Cum"].iloc[-1] - 1,
-            "Market Sharpe": sharpe_ratio(test["Return"]),
-            "LR Sharpe": sharpe_ratio(test["LR_Returns"]),
-            "XGB Sharpe": sharpe_ratio(test["XGB_Returns"]),
-            "Market Drawdown": max_drawdown(test["Market_Cum"]),
-            "LR Drawdown": max_drawdown(test["LR_Cum"]),
-            "XGB Drawdown": max_drawdown(test["XGB_Cum"]),
-            "Market Win Rate": win_rate(test["Return"]),
-            "LR Win Rate": win_rate(test["LR_Returns"]),
-            "XGB Win Rate": win_rate(test["XGB_Returns"])
-        })
-        
-        # -------------------------
-        # DISPLAY RESULTS FOR THIS TICKER
-        # -------------------------
-        st.subheader(f"📊 {ticker}")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Classification Results**")
-            st.dataframe(classification_results.round(3))
-        
-        with col2:
-            st.markdown("**Trading Performance**")
-            st.dataframe(trading_results.round(2))
-        
-        # Confusion Matrices
-        fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-        ConfusionMatrixDisplay.from_predictions(y_test, lr_pred,  cmap="Blues",  ax=ax[0])
-        ax[0].set_title("Logistic Regression")
-        ConfusionMatrixDisplay.from_predictions(y_test, xgb_pred, cmap="Greens", ax=ax[1])
-        ax[1].set_title("XGBoost")
-        plt.suptitle(f"{ticker} Confusion Matrices")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-        
-        # Feature Importance
-        fig, ax = plt.subplots(figsize=(8, 6))
-        xgb.plot_importance(xgb_model, importance_type="gain", xlabel="Importance Score")
-        plt.title(f"{ticker} — XGBoost Feature Importance")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-        
-        # Signal Plots
-        fig = plot_signals(test, ticker, "Logistic Regression", "LR_Position")
-        st.pyplot(fig)
-        plt.close(fig)
-        
-        fig = plot_signals(test, ticker, "XGBoost", "XGB_Position")
-        st.pyplot(fig)
-        plt.close(fig)
-        
-        # Cumulative Returns Plot
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(test.index, test["Market_Cum"], label="Buy & Hold", linewidth=2)
-        ax.plot(test.index, test["LR_Cum"],     label="LR Strategy",  linewidth=2)
-        ax.plot(test.index, test["XGB_Cum"],    label="XGB Strategy", linewidth=2)
-        ax.set_title(f"{ticker} — Cumulative Returns", fontsize=14)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Growth of €1")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-        
-        progress_bar.progress((idx + 1) / len(tickers))
     
     status_text.text("✅ Analysis Complete!")
     
@@ -474,6 +589,7 @@ if st.button("🚀 Run Analysis (Original Results)", type="primary"):
             summary_display[col] = summary_display[col].apply(lambda x: f"{x:.3f}")
         
         st.dataframe(summary_display)
+        summary.to_csv("Results/summary.csv", index=False)
         
         # ========================================
         # TRADING PERFORMANCE FOR ALL STOCKS - EXACTLY AS ORIGINAL
@@ -499,6 +615,11 @@ if st.button("🚀 Run Analysis (Original Results)", type="primary"):
             display_table[col] = display_table[col].map("{:.3f}".format)
         
         st.dataframe(display_table)
+        
+        display_table.to_csv(
+            "Results/All_Stocks_Trading_Performance.csv",
+            index=False
+        )
         
         # ========================================
         # AVERAGE PERFORMANCE - EXACTLY AS ORIGINAL
@@ -562,6 +683,7 @@ if st.button("🚀 Run Analysis (Original Results)", type="primary"):
         })
         
         st.dataframe(overall.round(3))
+        overall.to_csv("Results/overall_comparison.csv", index=False)
         
         # ========================================
         # DOWNLOAD ALL RESULTS
