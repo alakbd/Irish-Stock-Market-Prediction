@@ -10,13 +10,14 @@ This application analyzes seven Irish stocks (IRES.IR, KRZ.IR, GL9.IR, UPR.IR, G
 
 ### Key Features
 
-Data Processing: Downloads and processes 8 years of stock data from Yahoo Finance
-Feature Engineering: Creates technical indicators (SMA, EMA, RSI, MACD, volatility, lagged returns)
-Machine Learning Models: Logistic Regression and XGBoost with hyperparameter tuning
-SHAP Analysis: Model interpretability using SHAP values
-Trading Strategy: Simulates trading with transaction costs and generates buy/sell signals
-Performance Metrics: Sharpe ratio, maximum drawdown, win rate, and classification metrics
-Interactive Dashboard: Built with Streamlit for easy exploration
+- **Data Processing**: Downloads and processes 8 years of stock data from Yahoo Finance
+- **Feature Engineering**: Creates technical indicators (SMA, EMA, RSI, MACD, volatility, lagged returns)
+- **Machine Learning Models**: Logistic Regression and XGBoost with hyperparameter tuning
+- **SHAP Analysis**: Model interpretability using SHAP values
+- **Trading Strategy**: Simulates trading with transaction costs and generates buy/sell signals
+- **Performance Metrics**: Sharpe ratio, maximum drawdown, win rate, and classification metrics
+- **Interactive Dashboard**: Built with Streamlit for easy exploration
+
 
 ### Trading Strategy
 The system generates trading signals based on model predictions:
@@ -28,3 +29,5 @@ SELL Signal: When model predicts < threshold probability of positive return
 Transaction Costs: 0.1% per trade to simulate realistic trading conditions
 
 Position Sizing: Binary (either in position or out)
+
+###
