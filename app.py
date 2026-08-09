@@ -319,7 +319,15 @@ if st.button("🚀 Run Analysis", type="primary"):
             y = weekly_df["Target"]
 
             # --- Diagnostics: class balance ---
+            # --- Diagnostics ---
             class_counts = y.value_counts()
+
+            st.write(
+                f"{ticker}: {len(weekly_df)} weekly observations | "
+                f"Class 0: {class_counts.get(0, 0)} | "
+                f"Class 1: {class_counts.get(1, 0)}"
+            )
+
             if len(class_counts) < 2:
                 st.warning(f"{ticker}: Only one class present — skipping.")
                 progress_bar.progress((idx + 1) / len(tickers))
